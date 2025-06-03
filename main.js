@@ -45,9 +45,10 @@ class BracketLinkFixPlugin extends Plugin {
     styleEl = null; // To hold reference to our added style element
     observer = null;
     debouncedApplyFix = null;
+    debouncedResequenceFootnotes = null;
 
     async onload() {
-        console.log('Loading Bracket Link Fix Plugin (v4 - Reversed Logic)');
+        console.log('Loading Bracket Link Fix Plugin (v5 - with Footnote Resequencing)');
 
         // --- Inject CSS ---
         this.styleEl = document.createElement('style');
@@ -59,14 +60,12 @@ class BracketLinkFixPlugin extends Plugin {
                 this.styleEl.remove();
                 this.styleEl = null;
             }
-            // Also, ensure any lingering .cm-link-verified classes are removed from DOM?
-            // Might not be necessary if CSS handles the visual state correctly
-            // and Obsidian rebuilds the relevant DOM sections on reload.
         });
         // --- End Inject CSS ---
 
-        // Initialize debounced function
+        // Initialize debounced functions
         this.debouncedApplyFix = debounce(this.applyFix.bind(this), 100);
+        this.debouncedResequenceFootnotes = debounce(this.resequenceFootnotes.bind(this), 300);
 
         // Setup observer and apply fix on layout ready and leaf changes
         this.app.workspace.onLayoutReady(() => {
@@ -107,12 +106,14 @@ class BracketLinkFixPlugin extends Plugin {
             const config = { childList: true, subtree: true };
              // Use a simplified observer callback
             const callback = () => {
-                // Run the debounced fix on any relevant mutation
+                // Run both debounced functions on any relevant mutation
                 this.debouncedApplyFix(targetNode);
+                this.debouncedResequenceFootnotes();
             };
             this.observer = new MutationObserver(callback);
             this.observer.observe(targetNode, config);
             this.applyFix(targetNode); // Initial fix
+            this.resequenceFootnotes(); // Initial footnote check
         }
     }
 
@@ -165,6 +166,134 @@ class BracketLinkFixPlugin extends Plugin {
         // if (verifiedCount > 0 || revertedCount > 0) {
         //     console.log(`Bracket Link Fix (Reversed): Verified ${verifiedCount}, Reverted ${revertedCount} spans.`);
         // }
+    }
+
+    /**
+     * Resequences footnotes in the current document to ensure they are numbered
+     * sequentially starting from 1. Updates both inline references [^n] and
+     * footnote definitions [^n]: to maintain proper linking.
+     */
+    resequenceFootnotes() {
+        const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!activeView?.editor) return;
+
+        const editor = activeView.editor;
+        const content = editor.getValue();
+        
+        // Regex patterns for footnotes
+        const footnoteRefPattern = /\[\^([^\]]+)\]/g;
+        const footnoteDefPattern = /^\[\^([^\]]+)\]:\s*/gm;
+        
+        // Find all footnote references in order of appearance
+        const footnoteRefs = [];
+        const footnoteRefsMap = new Map(); // Maps original ID to new sequential number
+        let match;
+        
+        // Collect all footnote references in document order
+        footnoteRefPattern.lastIndex = 0;
+        while ((match = footnoteRefPattern.exec(content)) !== null) {
+            const originalId = match[1];
+            if (!footnoteRefsMap.has(originalId)) {
+                const newNumber = footnoteRefsMap.size + 1;
+                footnoteRefsMap.set(originalId, newNumber);
+                footnoteRefs.push({ originalId, newNumber, index: match.index });
+            }
+        }
+        
+        // Find all footnote definitions
+        const footnoteDefs = [];
+        footnoteDefPattern.lastIndex = 0;
+        while ((match = footnoteDefPattern.exec(content)) !== null) {
+            const originalId = match[1];
+            if (footnoteRefsMap.has(originalId)) {
+                footnoteDefs.push({ 
+                    originalId, 
+                    newNumber: footnoteRefsMap.get(originalId),
+                    index: match.index,
+                    fullMatch: match[0]
+                });
+            }
+        }
+        
+        // Check if resequencing is needed
+        let needsResequencing = false;
+        let expectedNumber = 1;
+        
+        for (const ref of footnoteRefs) {
+            if (ref.newNumber !== expectedNumber || isNaN(parseInt(ref.originalId))) {
+                needsResequencing = true;
+                break;
+            }
+            expectedNumber++;
+        }
+        
+        // Also check if any footnote definitions are out of order or missing
+        if (!needsResequencing) {
+            const defNumbers = footnoteDefs.map(def => parseInt(def.originalId)).filter(n => !isNaN(n));
+            const expectedDefs = Array.from({length: footnoteRefs.length}, (_, i) => i + 1);
+            if (defNumbers.length !== expectedDefs.length || 
+                !defNumbers.every((num, index) => num === expectedDefs[index])) {
+                needsResequencing = true;
+            }
+        }
+        
+        if (!needsResequencing || footnoteRefs.length === 0) {
+            return; // No resequencing needed
+        }
+        
+        console.log(`Footnote Resequencing: Processing ${footnoteRefs.length} footnotes`);
+        
+        // Create the updated content
+        let updatedContent = content;
+        
+        // Sort replacements by index in reverse order to avoid offset issues
+        const allReplacements = [];
+        
+        // Add footnote reference replacements
+        footnoteRefPattern.lastIndex = 0;
+        while ((match = footnoteRefPattern.exec(content)) !== null) {
+            const originalId = match[1];
+            if (footnoteRefsMap.has(originalId)) {
+                const newNumber = footnoteRefsMap.get(originalId);
+                allReplacements.push({
+                    index: match.index,
+                    length: match[0].length,
+                    replacement: `[^${newNumber}]`
+                });
+            }
+        }
+        
+        // Add footnote definition replacements
+        footnoteDefPattern.lastIndex = 0;
+        while ((match = footnoteDefPattern.exec(content)) !== null) {
+            const originalId = match[1];
+            if (footnoteRefsMap.has(originalId)) {
+                const newNumber = footnoteRefsMap.get(originalId);
+                allReplacements.push({
+                    index: match.index,
+                    length: match[0].length,
+                    replacement: `[^${newNumber}]: `
+                });
+            }
+        }
+        
+        // Sort by index in descending order and apply replacements
+        allReplacements.sort((a, b) => b.index - a.index);
+        
+        for (const replacement of allReplacements) {
+            updatedContent = 
+                updatedContent.slice(0, replacement.index) + 
+                replacement.replacement + 
+                updatedContent.slice(replacement.index + replacement.length);
+        }
+        
+        // Only update if content actually changed
+        if (updatedContent !== content) {
+            const cursor = editor.getCursor();
+            editor.setValue(updatedContent);
+            editor.setCursor(cursor); // Restore cursor position
+            console.log(`Footnote Resequencing: Updated ${allReplacements.length} footnote references and definitions`);
+        }
     }
 }
 
