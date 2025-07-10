@@ -1,9 +1,9 @@
 {
-    "id": "regular-brackets",
-    "name": "Regular Bracket Fix",
+    "id": "personal-plugins",
+    "name": "Personal Plugins",
     "version": "1.0.0",
     "minAppVersion": "1.0.0",
-    "description": "Renders as normal text bracketed text that is not followed by parentheses, fixing incorrect link styling in Live Preview.",
+    "description": "A collection of personally created plugin modules.",
     "author": "David Golding",
     "authorUrl": "https://davidgolding.com",
     "isDesktopOnly": false

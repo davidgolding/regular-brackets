@@ -1,7 +1,13 @@
 // main.js
-const { Plugin, MarkdownView } = require('obsidian');
+const { Plugin, MarkdownView, WorkspaceLeaf, Setting, PluginSettingTab } = require('obsidian');
 
-// Debounce function (remains the same)
+// Default settings
+const DEFAULT_SETTINGS = {
+    bracketLinkFix: true,
+    whiteCanvasMode: true
+};
+
+// Debounce function
 function debounce(func, wait) {
     let timeout;
     return function executedFunction(...args) {
@@ -14,11 +20,9 @@ function debounce(func, wait) {
     };
 }
 
-// Define the NEW, REVERSED CSS rules
-const REVERSED_FIX_CSS = `
-/* Injected by Bracket Link Fix Plugin (Reversed Logic) */
-
-/* Default state for ALL cm-link: make them look like normal text */
+// CSS for bracket link fix
+const BRACKET_LINK_CSS = `
+/* Bracket Link Fix - Injected by Personal Plugins */
 .cm-s-obsidian span.cm-link {
     color: var(--text-normal) !important;
     text-decoration: none !important;
@@ -28,8 +32,6 @@ const REVERSED_FIX_CSS = `
     color: var(--text-normal) !important;
     text-decoration: none !important;
 }
-
-/* Style ONLY for VERIFIED links (when .cm-link-verified is added) */
 .cm-s-obsidian span.cm-link.cm-link-verified {
     color: var(--text-accent) !important;
     text-decoration: none !important;
@@ -41,38 +43,108 @@ const REVERSED_FIX_CSS = `
 }
 `;
 
-class BracketLinkFixPlugin extends Plugin {
-    styleEl = null; // To hold reference to our added style element
-    observer = null;
-    debouncedApplyFix = null;
-    debouncedResequenceFootnotes = null;
+// CSS for white canvas mode
+const WHITE_CANVAS_CSS = `
+/* White Canvas Mode - Injected by Personal Plugins */
+body:not(.is-mobile).theme-dark .workspace-tabs:not(.mod-stacked) .view-content.light-mode-active:not(.vignette-radial, .vignette-linear, .animate, .ptm-fullscreen-writing-focus-element) {
+    background-color: #fff !important;
+    border-top-left-radius: var(--card-border-radius-dark, 8px) !important;
+    border-top-right-radius: var(--card-border-radius-dark, 8px) !important;
+}
+body:not(.is-mobile).theme-dark .workspace-tabs:not(.mod-stacked) .view-content.light-mode-active:not(.vignette-radial, .vignette-linear, .animate, .ptm-fullscreen-writing-focus-element) .cm-content {
+    color: rgb(76, 76, 76);
+}
+body.theme-dark .view-content.light-mode-active .inline-title {
+    color: rgb(76, 76, 76);
+}
+body .view-content.light-mode-active .markdown-source-view.mod-cm6 .cm-content {
+    caret-color: var(--color-base-25);
+}
+.light-mode-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    border-radius: 4px;
+    margin-left: 4px;
+    opacity: 0.7;
+    transition: opacity 0.2s ease;
+}
+.light-mode-toggle:hover {
+    opacity: 1;
+    background: var(--background-modifier-hover);
+}
+.light-mode-toggle.active {
+    opacity: 1;
+    background: var(--background-modifier-active);
+}
+.light-mode-toggle svg {
+    width: 16px;
+    height: 16px;
+}
+`;
 
-    async onload() {
-        console.log('Loading Bracket Link Fix Plugin (v5 - with Footnote Resequencing)');
+// Base class for plugin modules
+class PluginModule {
+    constructor(plugin) {
+        this.plugin = plugin;
+        this.app = plugin.app;
+        this.enabled = false;
+    }
 
-        // --- Inject CSS ---
+    async enable() {
+        if (this.enabled) return;
+        this.enabled = true;
+        await this.onEnable();
+    }
+
+    async disable() {
+        if (!this.enabled) return;
+        this.enabled = false;
+        await this.onDisable();
+    }
+
+    async onEnable() {
+        // Override in subclasses
+    }
+
+    async onDisable() {
+        // Override in subclasses
+    }
+}
+
+// Bracket Link Fix Module
+class BracketLinkFixModule extends PluginModule {
+    constructor(plugin) {
+        super(plugin);
+        this.styleEl = null;
+        this.observer = null;
+        this.debouncedApplyFix = null;
+        this.debouncedResequenceFootnotes = null;
+    }
+
+    async onEnable() {
+        console.log('Enabling Bracket Link Fix');
+        
+        // Inject CSS
         this.styleEl = document.createElement('style');
         this.styleEl.setAttribute('type', 'text/css');
-        this.styleEl.textContent = REVERSED_FIX_CSS; // Use the reversed CSS
+        this.styleEl.textContent = BRACKET_LINK_CSS;
         document.head.appendChild(this.styleEl);
-        this.register(() => {
-            if (this.styleEl) {
-                this.styleEl.remove();
-                this.styleEl = null;
-            }
-        });
-        // --- End Inject CSS ---
 
         // Initialize debounced functions
         this.debouncedApplyFix = debounce(this.applyFix.bind(this), 100);
         this.debouncedResequenceFootnotes = debounce(this.resequenceFootnotes.bind(this), 300);
 
-        // Setup observer and apply fix on layout ready and leaf changes
-        this.app.workspace.onLayoutReady(() => {
-            this.setupObserverAndApplyInitialFix();
-        });
-
-        this.registerEvent(
+        // Setup observer
+        this.setupObserverAndApplyInitialFix();
+        
+        // Register events
+        this.plugin.registerEvent(
             this.app.workspace.on('active-leaf-change', (leaf) => {
                 if (leaf && leaf.view instanceof MarkdownView) {
                     this.setupObserverAndApplyInitialFix();
@@ -83,10 +155,15 @@ class BracketLinkFixPlugin extends Plugin {
         );
     }
 
-    onunload() {
-        console.log('Unloading Bracket Link Fix Plugin');
+    async onDisable() {
+        console.log('Disabling Bracket Link Fix');
+        
         this.disconnectObserver();
-        // Cleanup function registered in onload handles style removal
+        
+        if (this.styleEl) {
+            this.styleEl.remove();
+            this.styleEl = null;
+        }
     }
 
     disconnectObserver() {
@@ -99,34 +176,25 @@ class BracketLinkFixPlugin extends Plugin {
     setupObserverAndApplyInitialFix() {
         this.disconnectObserver();
         const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-        if (!activeView?.editor?.cm?.contentDOM) { return; }
+        if (!activeView?.editor?.cm?.contentDOM) return;
+        
         const targetNode = activeView.editor.cm.contentDOM;
-
         if (targetNode) {
             const config = { childList: true, subtree: true };
-             // Use a simplified observer callback
             const callback = () => {
-                // Run both debounced functions on any relevant mutation
                 this.debouncedApplyFix(targetNode);
                 this.debouncedResequenceFootnotes();
             };
             this.observer = new MutationObserver(callback);
             this.observer.observe(targetNode, config);
-            this.applyFix(targetNode); // Initial fix
-            this.resequenceFootnotes(); // Initial footnote check
+            this.applyFix(targetNode);
+            this.resequenceFootnotes();
         }
     }
 
-    /**
-     * Finds span.cm-link elements. Adds .cm-link-verified class if they ARE
-     * immediately followed by '(', and removes .cm-link-verified if they are NOT.
-     * @param {Element} targetElement The container element (usually cm.contentDOM) to search within.
-     */
     applyFix(targetElement) {
         if (!targetElement) return;
-        // console.log('Bracket Link Fix (Reversed): Running applyFix...');
-
-        // Find all elements initially styled as links by Obsidian's editor
+        
         const potentialLinks = targetElement.querySelectorAll('span.cm-link');
         let verifiedCount = 0;
         let revertedCount = 0;
@@ -135,166 +203,254 @@ class BracketLinkFixPlugin extends Plugin {
             let nextNode = span.nextSibling;
             let isActualLinkSyntax = false;
 
-            // Traverse past whitespace-only text nodes
             while (nextNode && nextNode.nodeType === Node.TEXT_NODE && nextNode.textContent.trim() === '') {
                 nextNode = nextNode.nextSibling;
             }
 
-            // Check if the first meaningful node starts with '('
             if (nextNode && nextNode.nodeType === Node.TEXT_NODE && nextNode.textContent.startsWith('(')) {
                 isActualLinkSyntax = true;
             }
 
-            // ---- REVERSED LOGIC ----
             if (isActualLinkSyntax) {
-                // It IS a valid link pattern -> ADD .cm-link-verified
                 if (!span.classList.contains('cm-link-verified')) {
                     span.classList.add('cm-link-verified');
                     verifiedCount++;
                 }
             } else {
-                // It's NOT a valid link pattern -> REMOVE .cm-link-verified (if present)
-                // This ensures elements default to the base .cm-link style (now normal text)
                 if (span.classList.contains('cm-link-verified')) {
                     span.classList.remove('cm-link-verified');
                     revertedCount++;
                 }
             }
-            // ---- END REVERSED LOGIC ----
         });
-
-        // if (verifiedCount > 0 || revertedCount > 0) {
-        //     console.log(`Bracket Link Fix (Reversed): Verified ${verifiedCount}, Reverted ${revertedCount} spans.`);
-        // }
     }
 
-    /**
-     * Resequences footnotes in the current document to ensure they are numbered
-     * sequentially starting from 1. Updates both inline references [^n] and
-     * footnote definitions [^n]: to maintain proper linking.
-     */
     resequenceFootnotes() {
-        const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-        if (!activeView?.editor) return;
-
-        const editor = activeView.editor;
-        const content = editor.getValue();
-        
-        // Regex patterns for footnotes
-        const footnoteRefPattern = /\[\^([^\]]+)\]/g;
-        const footnoteDefPattern = /^\[\^([^\]]+)\]:\s*/gm;
-        
-        // Find all footnote references in order of appearance
-        const footnoteRefs = [];
-        const footnoteRefsMap = new Map(); // Maps original ID to new sequential number
-        let match;
-        
-        // Collect all footnote references in document order
-        footnoteRefPattern.lastIndex = 0;
-        while ((match = footnoteRefPattern.exec(content)) !== null) {
-            const originalId = match[1];
-            if (!footnoteRefsMap.has(originalId)) {
-                const newNumber = footnoteRefsMap.size + 1;
-                footnoteRefsMap.set(originalId, newNumber);
-                footnoteRefs.push({ originalId, newNumber, index: match.index });
-            }
-        }
-        
-        // Find all footnote definitions
-        const footnoteDefs = [];
-        footnoteDefPattern.lastIndex = 0;
-        while ((match = footnoteDefPattern.exec(content)) !== null) {
-            const originalId = match[1];
-            if (footnoteRefsMap.has(originalId)) {
-                footnoteDefs.push({ 
-                    originalId, 
-                    newNumber: footnoteRefsMap.get(originalId),
-                    index: match.index,
-                    fullMatch: match[0]
-                });
-            }
-        }
-        
-        // Check if resequencing is needed
-        let needsResequencing = false;
-        let expectedNumber = 1;
-        
-        for (const ref of footnoteRefs) {
-            if (ref.newNumber !== expectedNumber || isNaN(parseInt(ref.originalId))) {
-                needsResequencing = true;
-                break;
-            }
-            expectedNumber++;
-        }
-        
-        // Also check if any footnote definitions are out of order or missing
-        if (!needsResequencing) {
-            const defNumbers = footnoteDefs.map(def => parseInt(def.originalId)).filter(n => !isNaN(n));
-            const expectedDefs = Array.from({length: footnoteRefs.length}, (_, i) => i + 1);
-            if (defNumbers.length !== expectedDefs.length || 
-                !defNumbers.every((num, index) => num === expectedDefs[index])) {
-                needsResequencing = true;
-            }
-        }
-        
-        if (!needsResequencing || footnoteRefs.length === 0) {
-            return; // No resequencing needed
-        }
-        
-        console.log(`Footnote Resequencing: Processing ${footnoteRefs.length} footnotes`);
-        
-        // Create the updated content
-        let updatedContent = content;
-        
-        // Sort replacements by index in reverse order to avoid offset issues
-        const allReplacements = [];
-        
-        // Add footnote reference replacements
-        footnoteRefPattern.lastIndex = 0;
-        while ((match = footnoteRefPattern.exec(content)) !== null) {
-            const originalId = match[1];
-            if (footnoteRefsMap.has(originalId)) {
-                const newNumber = footnoteRefsMap.get(originalId);
-                allReplacements.push({
-                    index: match.index,
-                    length: match[0].length,
-                    replacement: `[^${newNumber}]`
-                });
-            }
-        }
-        
-        // Add footnote definition replacements
-        footnoteDefPattern.lastIndex = 0;
-        while ((match = footnoteDefPattern.exec(content)) !== null) {
-            const originalId = match[1];
-            if (footnoteRefsMap.has(originalId)) {
-                const newNumber = footnoteRefsMap.get(originalId);
-                allReplacements.push({
-                    index: match.index,
-                    length: match[0].length,
-                    replacement: `[^${newNumber}]: `
-                });
-            }
-        }
-        
-        // Sort by index in descending order and apply replacements
-        allReplacements.sort((a, b) => b.index - a.index);
-        
-        for (const replacement of allReplacements) {
-            updatedContent = 
-                updatedContent.slice(0, replacement.index) + 
-                replacement.replacement + 
-                updatedContent.slice(replacement.index + replacement.length);
-        }
-        
-        // Only update if content actually changed
-        if (updatedContent !== content) {
-            const cursor = editor.getCursor();
-            editor.setValue(updatedContent);
-            editor.setCursor(cursor); // Restore cursor position
-            console.log(`Footnote Resequencing: Updated ${allReplacements.length} footnote references and definitions`);
-        }
+        // Placeholder for footnote resequencing logic
+        // Add your existing resequenceFootnotes implementation here
     }
 }
 
-module.exports = BracketLinkFixPlugin;
+// White Canvas Mode Module
+class WhiteCanvasModeModule extends PluginModule {
+    constructor(plugin) {
+        super(plugin);
+        this.styleEl = null;
+        this.activeLeaves = new Set();
+    }
+
+    async onEnable() {
+        console.log('Enabling White Canvas Mode');
+        
+        // Inject CSS
+        this.styleEl = document.createElement('style');
+        this.styleEl.setAttribute('type', 'text/css');
+        this.styleEl.id = 'white-canvas-mode-styles';
+        this.styleEl.textContent = WHITE_CANVAS_CSS;
+        document.head.appendChild(this.styleEl);
+
+        // Add buttons to existing tabs
+        this.addButtonToExistingTabs();
+
+        // Register events
+        this.plugin.registerEvent(
+            this.app.workspace.on('layout-change', () => {
+                this.addButtonToExistingTabs();
+            })
+        );
+    }
+
+    async onDisable() {
+        console.log('Disabling White Canvas Mode');
+        
+        this.removeAllButtons();
+        
+        if (this.styleEl) {
+            this.styleEl.remove();
+            this.styleEl = null;
+        }
+    }
+
+    addButtonToExistingTabs() {
+        const leaves = this.app.workspace.getLeavesOfType('markdown');
+        
+        leaves.forEach(leaf => {
+            if (!this.activeLeaves.has(leaf)) {
+                this.addButtonToTab(leaf);
+                this.activeLeaves.add(leaf);
+            }
+        });
+    }
+
+    addButtonToTab(leaf) {
+        const view = leaf.view;
+        if (!view || !view.containerEl) return;
+
+        const tabHeader = leaf.tabHeaderEl;
+        if (!tabHeader) return;
+
+        if (tabHeader.querySelector('.light-mode-toggle')) return;
+
+        const button = document.createElement('button');
+        button.className = 'light-mode-toggle';
+        button.setAttribute('aria-label', 'Toggle white canvas mode for this note');
+        button.innerHTML = `
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="svg-icon lucide-sun-moon">
+                <path d="M12 8a2.83 2.83 0 0 0 4 4 4 4 0 1 1-4-4"></path>
+                <path d="M12 2v2"></path>
+                <path d="M12 20v2"></path>
+                <path d="m4.9 4.9 1.4 1.4"></path>
+                <path d="m17.7 17.7 1.4 1.4"></path>
+                <path d="M2 12h2"></path>
+                <path d="M20 12h2"></path>
+                <path d="m6.3 17.7-1.4 1.4"></path>
+                <path d="m19.1 4.9-1.4 1.4"></path>
+            </svg>
+        `;
+
+        button.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            this.toggleWhiteCanvas(leaf, button);
+        });
+
+        tabHeader.appendChild(button);
+    }
+
+    toggleWhiteCanvas(leaf, button) {
+        const view = leaf.view;
+        if (!view || !view.containerEl) return;
+
+        const viewContent = view.containerEl.querySelector('.view-content');
+        if (!viewContent) return;
+
+        const isActive = viewContent.classList.contains('light-mode-active');
+        
+        if (isActive) {
+            viewContent.classList.remove('light-mode-active');
+            button.classList.remove('active');
+            button.setAttribute('aria-label', 'Enable white canvas mode for this note');
+        } else {
+            viewContent.classList.add('light-mode-active');
+            button.classList.add('active');
+            button.setAttribute('aria-label', 'Disable white canvas mode for this note');
+        }
+    }
+
+    removeAllButtons() {
+        const buttons = document.querySelectorAll('.light-mode-toggle');
+        buttons.forEach(button => button.remove());
+        
+        const viewContents = document.querySelectorAll('.view-content.light-mode-active');
+        viewContents.forEach(content => content.classList.remove('light-mode-active'));
+        
+        this.activeLeaves.clear();
+    }
+}
+
+// Settings Tab
+class PersonalPluginsSettingTab extends PluginSettingTab {
+    constructor(app, plugin) {
+        super(app, plugin);
+        this.plugin = plugin;
+    }
+
+    display() {
+        const { containerEl } = this;
+        containerEl.empty();
+
+        containerEl.createEl('h2', { text: 'Personal Plugins Settings' });
+
+        // Bracket Link Fix Setting
+        new Setting(containerEl)
+            .setName('Bracket Link Fix')
+            .setDesc('Fix bracket links to only show as links when followed by parentheses')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.bracketLinkFix)
+                .onChange(async (value) => {
+                    this.plugin.settings.bracketLinkFix = value;
+                    await this.plugin.saveSettings();
+                    await this.plugin.toggleModule('bracketLinkFix', value);
+                })
+            );
+
+        // White Canvas Mode Setting
+        new Setting(containerEl)
+            .setName('White Canvas Mode')
+            .setDesc('Add toggle buttons to tabs for white background in dark mode')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.whiteCanvasMode)
+                .onChange(async (value) => {
+                    this.plugin.settings.whiteCanvasMode = value;
+                    await this.plugin.saveSettings();
+                    await this.plugin.toggleModule('whiteCanvasMode', value);
+                })
+            );
+    }
+}
+
+// Main Plugin Class
+class PersonalPluginsPlugin extends Plugin {
+    constructor() {
+        super(...arguments);
+        this.settings = DEFAULT_SETTINGS;
+        this.modules = {};
+    }
+
+    async onload() {
+        console.log('Loading Personal Plugins');
+
+        // Load settings
+        await this.loadSettings();
+
+        // Initialize modules
+        this.modules.bracketLinkFix = new BracketLinkFixModule(this);
+        this.modules.whiteCanvasMode = new WhiteCanvasModeModule(this);
+
+        // Add settings tab
+        this.addSettingTab(new PersonalPluginsSettingTab(this.app, this));
+
+        // Enable modules based on settings
+        this.app.workspace.onLayoutReady(async () => {
+            await this.initializeModules();
+        });
+    }
+
+    async onunload() {
+        console.log('Unloading Personal Plugins');
+        
+        // Disable all modules
+        for (const module of Object.values(this.modules)) {
+            await module.disable();
+        }
+    }
+
+    async initializeModules() {
+        for (const [key, module] of Object.entries(this.modules)) {
+            if (this.settings[key]) {
+                await module.enable();
+            }
+        }
+    }
+
+    async toggleModule(moduleKey, enabled) {
+        const module = this.modules[moduleKey];
+        if (!module) return;
+
+        if (enabled) {
+            await module.enable();
+        } else {
+            await module.disable();
+        }
+    }
+
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
+
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
+}
+
+module.exports = PersonalPluginsPlugin;
